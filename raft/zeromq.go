@@ -5,6 +5,7 @@ import (
 	"github.com/goraft/raft"
 	zmq "github.com/pebbe/zmq3"
 	"io"
+	"reflect"
 	"time"
 )
 
@@ -66,7 +67,7 @@ func (self *ZmqTransporter) Start(server raft.Server) {
 		reactor.AddChannel(self.stop, 1, func(interface{}) error { self.running = false; return nil })
 
 		for self.running {
-			reactor.Run(10 * time.Millisecond)
+			reactor.Run(100 * time.Millisecond)
 		}
 	}()
 }
@@ -78,6 +79,11 @@ func (self *ZmqTransporter) processResponse(name string, rb *bytes.Buffer, req r
 		return err
 	}
 	resp := handler()
+	logger.Printf("resp is %#v, resp == nil ? %#v", resp, resp == nil)
+	if resp == nil || !reflect.ValueOf(resp).Elem().IsValid() {
+		logger.Printf("Got nil response from raft to %s", name)
+		return nil
+	}
 
 	var wb bytes.Buffer
 	_, err = resp.Encode(&wb)
@@ -123,6 +129,10 @@ func (self *ZmqTransporter) parseIncomingResponse() error {
 		req := &raft.SnapshotRequest{}
 		self.processResponse("snapshot request", rb, req,
 			func() raftReqResp { return self.server.RequestSnapshot(req) })
+	case requestShapshotRecovery:
+		req := &raft.SnapshotRecoveryRequest{}
+		self.processResponse("snapshot recovery request", rb, req,
+			func() raftReqResp { return self.server.SnapshotRecoveryRequest(req) })
 	default:
 		logger.Printf("Unknown request kind: %v", kind)
 	}

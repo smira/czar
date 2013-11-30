@@ -20,8 +20,18 @@ func newTestServer(name string, transporter raft.Transporter) raft.Server {
 	if err := os.MkdirAll(p, 0644); err != nil {
 		panic(err.Error())
 	}
-	server, _ := raft.NewServer(name, p, transporter, nil, nil, "")
+	server, _ := raft.NewServer(name, p, transporter, &MockStateMachine{}, nil, "")
 	return server
+}
+
+type MockStateMachine struct{}
+
+func (*MockStateMachine) Save() ([]byte, error) {
+	return []byte{}, nil
+}
+
+func (*MockStateMachine) Recovery([]byte) error {
+	return nil
 }
 
 func Test(t *testing.T) {
@@ -128,4 +138,42 @@ func (s *ZmqSuite) TestSnapshotRequest(c *C) {
 	})
 	c.Assert(resp, NotNil)
 	c.Assert(resp.Success, Equals, true)
+}
+
+func (s *ZmqSuite) TestSnapshotRecoveryRequest(c *C) {
+	s.transporter2.Start(s.server2)
+	s.server2.Start()
+	defer s.server2.Stop()
+
+	s.transporter1.SendSnapshotRequest(s.server1, s.peer2, &raft.SnapshotRequest{
+		LastTerm:   1,
+		LastIndex:  0,
+		LeaderName: "server1",
+	})
+
+	resp := s.transporter1.SendSnapshotRecoveryRequest(s.server1, s.peer2, &raft.SnapshotRecoveryRequest{
+		Peers:      []*raft.Peer{},
+		State:      []byte{},
+		LastTerm:   1,
+		LastIndex:  0,
+		LeaderName: "server1",
+	})
+	c.Assert(resp, NotNil)
+	c.Assert(resp.Success, Equals, true)
+	c.Assert(resp.Term, Equals, uint64(1))
+}
+
+func (s *ZmqSuite) TestNilResponse(c *C) {
+	s.transporter2.Start(s.server2)
+	s.server2.Start()
+	defer s.server2.Stop()
+
+	resp := s.transporter1.SendSnapshotRecoveryRequest(s.server1, s.peer2, &raft.SnapshotRecoveryRequest{
+		Peers:      []*raft.Peer{},
+		State:      []byte{},
+		LastTerm:   1,
+		LastIndex:  0,
+		LeaderName: "server1",
+	})
+	c.Assert(resp, IsNil)
 }
