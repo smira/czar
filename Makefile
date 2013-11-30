@@ -2,6 +2,7 @@ prepare:
 	go get github.com/axw/gocov/gocov
 	go get github.com/golang/lint/golint
 	go get github.com/matm/gocov-html
+	go get github.com/mattn/goveralls
 
 coverage:
 	gocov test ./... | gocov-html > coverage.html

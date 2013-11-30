@@ -1,0 +1,15 @@
+language: go
+
+go:
+  - 1.1
+  - tip
+
+env:
+  global:
+    - secure: "wF08rryl1Fo5H8WSB2Dwp9In2kqL1yiGNH7OlMDZ4aG0LmBeQRF0c4RJIZBkgLAROSnc77bizpGzhVdvio0u7mXQW3+EV7QOwBhcD1FV5KzGCy9dbha8X9dtl09PkxSRap2V/EiwR3/JuFdlbs3R2TSHyeCfIxZLA13Vj3MfRnw="
+
+install:
+  - make prepare
+
+
+script: /home/travis/gopath/bin/goveralls -service travis-ci.org $COVERALLS_TOKEN
