@@ -1,5 +1,6 @@
 prepare:
 	go get -d -v ./...
+	go get launchpad.net/gocheck
 	go get github.com/axw/gocov/gocov
 	go get github.com/golang/lint/golint
 	go get github.com/matm/gocov-html
