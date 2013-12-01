@@ -2,7 +2,6 @@ package raft
 
 import (
 	"github.com/goraft/raft"
-	"io/ioutil"
 	. "launchpad.net/gocheck"
 	"os"
 	"testing"
@@ -17,10 +16,7 @@ const (
 
 // Create new raft test server
 func newTestServer(name string, transporter raft.Transporter) raft.Server {
-	p, _ := ioutil.TempDir("", "raft-server-")
-	if err := os.MkdirAll(p, 0644); err != nil {
-		panic(err.Error())
-	}
+	p := tempDirForDB()
 	server, _ := raft.NewServer(name, p, transporter, &MockStateMachine{}, nil, "")
 	return server
 }
@@ -76,6 +72,13 @@ func (s *ZmqSuite) TearDownTest(c *C) {
 	}
 
 	time.Sleep(100 * time.Millisecond)
+
+	if s.server1 != nil {
+		os.RemoveAll(s.server1.Path())
+	}
+	if s.server2 != nil {
+		os.RemoveAll(s.server1.Path())
+	}
 }
 
 func (s *ZmqSuite) TestStartTransport(c *C) {
