@@ -35,20 +35,20 @@ func getNodeName(path string) (string, error) {
 	}
 
 	if !os.IsNotExist(err) {
-		return "", fmt.Errorf("Unable to read nodename file %s: %v", nodeNamePath, err)
+		return "", fmt.Errorf("unable to read nodename file %s: %v", nodeNamePath, err)
 	}
 
 	rb := make([]byte, nodeNameLength)
 	_, err = io.ReadFull(rand.Reader, rb)
 	if err != nil {
-		return "", fmt.Errorf("Unable to generate random data: %v", err)
+		return "", fmt.Errorf("unable to generate random data: %v", err)
 	}
 	nodeName = hex.EncodeToString(rb)
 	logger.Printf("Generated node name: %s\n", nodeName)
 
 	err = ioutil.WriteFile(nodeNamePath, []byte(nodeName), 0664)
 	if err != nil {
-		return "", fmt.Errorf("Unable to create nodename file %s: %v", nodeNamePath, err)
+		return "", fmt.Errorf("unable to create nodename file %s: %v", nodeNamePath, err)
 	}
 
 	return nodeName, nil
