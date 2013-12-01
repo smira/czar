@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// ZmqTransporter mplements raft Transporter interface
+// ZmqTransporter mplements raft.Transporter interface
 type ZmqTransporter struct {
 	incoming       *zmq.Socket
 	outgoing       map[string]*zmq.Socket
@@ -19,6 +19,7 @@ type ZmqTransporter struct {
 	receiveTimeout time.Duration
 }
 
+// Bytes that are used to distinguish packets on the wire
 const (
 	requestVote             = 0x01
 	requestAppendEntries    = 0x02
@@ -26,6 +27,7 @@ const (
 	requestShapshotRecovery = 0x04
 )
 
+// Interace that covers raft request and response types
 type raftReqResp interface {
 	Encode(io.Writer) (int, error)
 	Decode(io.Reader) (int, error)
@@ -57,22 +59,23 @@ func NewZmqTransporter(listenAddress string, receiveTimeout time.Duration) (*Zmq
 	return result, nil
 }
 
-// Start processing incoming messages
-func (self *ZmqTransporter) Start(server raft.Server) {
-	self.server = server
-	self.running = true
+// Start processing incoming messages from ØMQ
+func (transporter *ZmqTransporter) Start(server raft.Server) {
+	transporter.server = server
+	transporter.running = true
 	go func() {
 		reactor := zmq.NewReactor()
-		reactor.AddSocket(self.incoming, zmq.POLLIN, func(zmq.State) error { return self.parseIncomingResponse() })
-		reactor.AddChannel(self.stop, 1, func(interface{}) error { self.running = false; return nil })
+		reactor.AddSocket(transporter.incoming, zmq.POLLIN, func(zmq.State) error { return transporter.parseIncomingResponse() })
+		reactor.AddChannel(transporter.stop, 1, func(interface{}) error { transporter.running = false; return nil })
 
-		for self.running {
+		for transporter.running {
 			reactor.Run(100 * time.Millisecond)
 		}
 	}()
 }
 
-func (self *ZmqTransporter) processResponse(name string, rb *bytes.Buffer, req raftReqResp, handler func() raftReqResp) error {
+// processResponse passes request to Raft server and gets response back
+func (transporter *ZmqTransporter) processResponse(name string, rb *bytes.Buffer, req raftReqResp, handler func() raftReqResp) error {
 	_, err := req.Decode(rb)
 	if err != nil && err != io.EOF {
 		logger.Printf("Unable to decode %s: %v", name, err)
@@ -92,7 +95,7 @@ func (self *ZmqTransporter) processResponse(name string, rb *bytes.Buffer, req r
 		return err
 	}
 
-	_, err = self.incoming.SendBytes(wb.Bytes(), 0)
+	_, err = transporter.incoming.SendBytes(wb.Bytes(), 0)
 	if err != nil {
 		logger.Printf("Unable to send response back to %s: %v", name, err)
 		return err
@@ -101,8 +104,9 @@ func (self *ZmqTransporter) processResponse(name string, rb *bytes.Buffer, req r
 	return nil
 }
 
-func (self *ZmqTransporter) parseIncomingResponse() error {
-	request, err := self.incoming.RecvBytes(0)
+// parseIncomingResponse parses packets on the wire
+func (transporter *ZmqTransporter) parseIncomingResponse() error {
+	request, err := transporter.incoming.RecvBytes(0)
 	if err != nil {
 		logger.Printf("Error while receiving incoming request: %v\n", err)
 		return nil
@@ -119,20 +123,20 @@ func (self *ZmqTransporter) parseIncomingResponse() error {
 	switch kind {
 	case requestVote:
 		req := &raft.RequestVoteRequest{}
-		self.processResponse("request vote", rb, req,
-			func() raftReqResp { return self.server.RequestVote(req) })
+		transporter.processResponse("request vote", rb, req,
+			func() raftReqResp { return transporter.server.RequestVote(req) })
 	case requestAppendEntries:
 		req := &raft.AppendEntriesRequest{}
-		self.processResponse("append entries request", rb, req,
-			func() raftReqResp { return self.server.AppendEntries(req) })
+		transporter.processResponse("append entries request", rb, req,
+			func() raftReqResp { return transporter.server.AppendEntries(req) })
 	case requestSnapshot:
 		req := &raft.SnapshotRequest{}
-		self.processResponse("snapshot request", rb, req,
-			func() raftReqResp { return self.server.RequestSnapshot(req) })
+		transporter.processResponse("snapshot request", rb, req,
+			func() raftReqResp { return transporter.server.RequestSnapshot(req) })
 	case requestShapshotRecovery:
 		req := &raft.SnapshotRecoveryRequest{}
-		self.processResponse("snapshot recovery request", rb, req,
-			func() raftReqResp { return self.server.SnapshotRecoveryRequest(req) })
+		transporter.processResponse("snapshot recovery request", rb, req,
+			func() raftReqResp { return transporter.server.SnapshotRecoveryRequest(req) })
 	default:
 		logger.Printf("Unknown request kind: %v", kind)
 	}
@@ -141,8 +145,8 @@ func (self *ZmqTransporter) parseIncomingResponse() error {
 }
 
 // getSocketFor returns outgoing ZMQ socket for peer, creating when necessary
-func (self *ZmqTransporter) getSocketFor(peer *raft.Peer) (*zmq.Socket, error) {
-	_, ok := self.outgoing[peer.ConnectionString]
+func (transporter *ZmqTransporter) getSocketFor(peer *raft.Peer) (*zmq.Socket, error) {
+	_, ok := transporter.outgoing[peer.ConnectionString]
 	if !ok {
 		socket, err := zmq.NewSocket(zmq.REQ)
 		if err != nil {
@@ -156,18 +160,19 @@ func (self *ZmqTransporter) getSocketFor(peer *raft.Peer) (*zmq.Socket, error) {
 			return nil, err
 		}
 
-		err = socket.SetRcvtimeo(self.receiveTimeout)
+		err = socket.SetRcvtimeo(transporter.receiveTimeout)
 		if err != nil {
 			return nil, err
 		}
 
-		self.outgoing[peer.ConnectionString] = socket
+		transporter.outgoing[peer.ConnectionString] = socket
 	}
 
-	return self.outgoing[peer.ConnectionString], nil
+	return transporter.outgoing[peer.ConnectionString], nil
 }
 
-func (self *ZmqTransporter) sendRequest(name string, kind byte, peer *raft.Peer, req raftReqResp, resp raftReqResp) bool {
+// sendRequest sends encodes, sends request and decodes response
+func (transporter *ZmqTransporter) sendRequest(name string, kind byte, peer *raft.Peer, req raftReqResp, resp raftReqResp) bool {
 	var b bytes.Buffer
 	b.WriteByte(kind)
 
@@ -176,7 +181,7 @@ func (self *ZmqTransporter) sendRequest(name string, kind byte, peer *raft.Peer,
 		return false
 	}
 
-	socket, err := self.getSocketFor(peer)
+	socket, err := transporter.getSocketFor(peer)
 	if err != nil {
 		logger.Printf("Unable to create socket for peer %s: %v", peer.ConnectionString, err)
 		return false
@@ -203,54 +208,59 @@ func (self *ZmqTransporter) sendRequest(name string, kind byte, peer *raft.Peer,
 	return true
 }
 
-func (self *ZmqTransporter) SendVoteRequest(server raft.Server, peer *raft.Peer, req *raft.RequestVoteRequest) *raft.RequestVoteResponse {
+// SendVoteRequest sends vote request to other peer
+func (transporter *ZmqTransporter) SendVoteRequest(server raft.Server, peer *raft.Peer, req *raft.RequestVoteRequest) *raft.RequestVoteResponse {
 	resp := &raft.RequestVoteResponse{}
 
-	if self.sendRequest("request vote", requestVote, peer, req, resp) {
+	if transporter.sendRequest("request vote", requestVote, peer, req, resp) {
 		return resp
 	}
 
 	return nil
 }
 
-func (self *ZmqTransporter) SendAppendEntriesRequest(server raft.Server, peer *raft.Peer, req *raft.AppendEntriesRequest) *raft.AppendEntriesResponse {
+// SendAppendEntriesRequest sends append entries request to other peer
+func (transporter *ZmqTransporter) SendAppendEntriesRequest(server raft.Server, peer *raft.Peer, req *raft.AppendEntriesRequest) *raft.AppendEntriesResponse {
 	resp := &raft.AppendEntriesResponse{}
 
-	if self.sendRequest("append entries", requestAppendEntries, peer, req, resp) {
+	if transporter.sendRequest("append entries", requestAppendEntries, peer, req, resp) {
 		return resp
 	}
 
 	return nil
 }
 
-func (self *ZmqTransporter) SendSnapshotRequest(server raft.Server, peer *raft.Peer, req *raft.SnapshotRequest) *raft.SnapshotResponse {
+// SendSnapshotRequest sends snapshot request to other peer
+func (transporter *ZmqTransporter) SendSnapshotRequest(server raft.Server, peer *raft.Peer, req *raft.SnapshotRequest) *raft.SnapshotResponse {
 	resp := &raft.SnapshotResponse{}
 
-	if self.sendRequest("snapshot request", requestSnapshot, peer, req, resp) {
+	if transporter.sendRequest("snapshot request", requestSnapshot, peer, req, resp) {
 		return resp
 	}
 
 	return nil
 }
 
-func (self *ZmqTransporter) SendSnapshotRecoveryRequest(server raft.Server, peer *raft.Peer, req *raft.SnapshotRecoveryRequest) *raft.SnapshotRecoveryResponse {
+// SendSnapshotRecoveryRequest sends snapshot recovery request to other peer
+func (transporter *ZmqTransporter) SendSnapshotRecoveryRequest(server raft.Server, peer *raft.Peer, req *raft.SnapshotRecoveryRequest) *raft.SnapshotRecoveryResponse {
 	resp := &raft.SnapshotRecoveryResponse{}
 
-	if self.sendRequest("snapshot recovery", requestShapshotRecovery, peer, req, resp) {
+	if transporter.sendRequest("snapshot recovery", requestShapshotRecovery, peer, req, resp) {
 		return resp
 	}
 
 	return nil
 }
 
-func (self *ZmqTransporter) Shutdown() {
-	if self.running {
-		logger.Printf("Shutting down ZMQ transporter for server %s\n", self.server.Name())
-		self.stop <- true
-		logger.Printf("Stopped ZMQ transporter for server %s\n", self.server.Name())
+// Shutdown stops transporter, processing of incoming packets, closes ØMQ sockets
+func (transporter *ZmqTransporter) Shutdown() {
+	if transporter.running {
+		logger.Printf("Shutting down ZMQ transporter for server %s\n", transporter.server.Name())
+		transporter.stop <- true
+		logger.Printf("Stopped ZMQ transporter for server %s\n", transporter.server.Name())
 	}
-	self.incoming.Close()
-	for _, socket := range self.outgoing {
+	transporter.incoming.Close()
+	for _, socket := range transporter.outgoing {
 		socket.Close()
 	}
 }

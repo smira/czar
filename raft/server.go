@@ -1,4 +1,4 @@
-// Integration with goraft and ØMQ libraries
+// Package raft provides integration with goraft and ØMQ libraries
 package raft
 
 import (

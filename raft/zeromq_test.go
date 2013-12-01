@@ -15,6 +15,7 @@ const (
 	testRecvTimeout = 1 * time.Second
 )
 
+// Create new raft test server
 func newTestServer(name string, transporter raft.Transporter) raft.Server {
 	p, _ := ioutil.TempDir("", "raft-server-")
 	if err := os.MkdirAll(p, 0644); err != nil {
@@ -24,6 +25,7 @@ func newTestServer(name string, transporter raft.Transporter) raft.Server {
 	return server
 }
 
+// State machine mock
 type MockStateMachine struct{}
 
 func (*MockStateMachine) Save() ([]byte, error) {
@@ -34,6 +36,7 @@ func (*MockStateMachine) Recovery([]byte) error {
 	return nil
 }
 
+// Launch gocheck tests
 func Test(t *testing.T) {
 	TestingT(t)
 }
