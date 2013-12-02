@@ -49,7 +49,6 @@ type ZmqSuite struct {
 var _ = Suite(&ZmqSuite{})
 
 func (s *ZmqSuite) SetUpTest(c *C) {
-	raft.SetLogLevel(raft.Trace)
 	var err error
 	s.transporter1, err = NewZmqTransporter(testListener1, testRecvTimeout)
 	c.Assert(err, IsNil)
@@ -182,4 +181,32 @@ func (s *ZmqSuite) TestNilResponse(c *C) {
 		LeaderName: "server1",
 	})
 	c.Assert(resp, IsNil)
+}
+
+func (s *ZmqSuite) TestRegisterCommand(c *C) {
+	s.transporter1.RegisterCommand(func() raft.Command { return &raft.NOPCommand{} })
+
+	c.Assert(func() { s.transporter1.RegisterCommand(func() raft.Command { return &raft.NOPCommand{} }) }, PanicMatches, "Duplicate register for command name.*")
+}
+
+func (s *ZmqSuite) TestSendCommand(c *C) {
+	s.transporter2.Start(s.server2)
+	s.server2.Start()
+	defer s.server2.Stop()
+
+	err := s.transporter1.SendCommand(s.peer2.ConnectionString, raft.NOPCommand{})
+	c.Assert(err, NotNil)
+	c.Assert(err, ErrorMatches, ".*unknown command name.*")
+
+	s.transporter2.RegisterCommand(func() raft.Command { return &raft.NOPCommand{} })
+	err = s.transporter1.SendCommand(s.peer2.ConnectionString, &raft.NOPCommand{})
+	c.Assert(err, NotNil)
+	c.Assert(err, ErrorMatches, ".*Not current leader.*")
+
+	s.transporter2.RegisterCommand(func() raft.Command { return &raft.DefaultJoinCommand{} })
+	err = s.transporter1.SendCommand(s.peer2.ConnectionString, &raft.DefaultJoinCommand{
+		Name:             s.server2.Name(),
+		ConnectionString: testListener2,
+	})
+	c.Assert(err, IsNil)
 }

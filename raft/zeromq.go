@@ -2,12 +2,17 @@ package raft
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"github.com/goraft/raft"
 	zmq "github.com/pebbe/zmq3"
 	"io"
 	"reflect"
 	"time"
 )
+
+// CommandInstanciator is a function that instanciates command instance
+type CommandInstanciator func() raft.Command
 
 // ZmqTransporter mplements raft.Transporter interface
 type ZmqTransporter struct {
@@ -17,6 +22,7 @@ type ZmqTransporter struct {
 	running        bool
 	server         raft.Server
 	receiveTimeout time.Duration
+	commands       map[string]CommandInstanciator
 }
 
 // Bytes that are used to distinguish packets on the wire
@@ -25,6 +31,7 @@ const (
 	requestAppendEntries    = 0x02
 	requestSnapshot         = 0x03
 	requestShapshotRecovery = 0x04
+	requestCommand          = 0x80
 )
 
 // Interace that covers raft request and response types
@@ -40,6 +47,7 @@ func NewZmqTransporter(listenAddress string, receiveTimeout time.Duration) (*Zmq
 		outgoing:       make(map[string]*zmq.Socket),
 		stop:           make(chan interface{}),
 		receiveTimeout: receiveTimeout,
+		commands:       make(map[string]CommandInstanciator),
 	}
 
 	incoming, err := zmq.NewSocket(zmq.REP)
@@ -82,7 +90,6 @@ func (transporter *ZmqTransporter) processResponse(name string, rb *bytes.Buffer
 		return err
 	}
 	resp := handler()
-	logger.Printf("resp is %#v, resp == nil ? %#v", resp, resp == nil)
 	if resp == nil || !reflect.ValueOf(resp).Elem().IsValid() {
 		logger.Printf("Got nil response from raft to %s", name)
 		return nil
@@ -137,6 +144,46 @@ func (transporter *ZmqTransporter) parseIncomingResponse() error {
 		req := &raft.SnapshotRecoveryRequest{}
 		transporter.processResponse("snapshot recovery request", rb, req,
 			func() raftReqResp { return transporter.server.SnapshotRecoveryRequest(req) })
+	case requestCommand:
+		decoder := json.NewDecoder(rb)
+
+		var commandName string
+		var response error
+
+		err = decoder.Decode(&commandName)
+		if err != nil {
+			response = fmt.Errorf("unable to decode command name: %v", err)
+		} else {
+			instanciator, ok := transporter.commands[commandName]
+
+			if !ok {
+				response = fmt.Errorf("unknown command name %s", commandName)
+			} else {
+				command := instanciator()
+				err = decoder.Decode(command)
+				if err != nil {
+					response = fmt.Errorf("unable to decode command %s: %v", commandName, err)
+				} else {
+					_, err = transporter.server.Do(command)
+					if err != nil {
+						response = fmt.Errorf("error processing command %s: %v", commandName, err)
+					}
+				}
+			}
+		}
+
+		wb := new(bytes.Buffer)
+		encoder := json.NewEncoder(wb)
+		if response == nil {
+			encoder.Encode(nil)
+		} else {
+			encoder.Encode(response.Error())
+		}
+
+		_, err = transporter.incoming.SendBytes(wb.Bytes(), 0)
+		if err != nil {
+			logger.Printf("Unable to send response back to command %s: %v", commandName, err)
+		}
 	default:
 		logger.Printf("Unknown request kind: %v", kind)
 	}
@@ -145,8 +192,8 @@ func (transporter *ZmqTransporter) parseIncomingResponse() error {
 }
 
 // getSocketFor returns outgoing ZMQ socket for peer, creating when necessary
-func (transporter *ZmqTransporter) getSocketFor(peer *raft.Peer) (*zmq.Socket, error) {
-	_, ok := transporter.outgoing[peer.ConnectionString]
+func (transporter *ZmqTransporter) getSocketFor(peer string) (*zmq.Socket, error) {
+	_, ok := transporter.outgoing[peer]
 	if !ok {
 		socket, err := zmq.NewSocket(zmq.REQ)
 		if err != nil {
@@ -154,8 +201,8 @@ func (transporter *ZmqTransporter) getSocketFor(peer *raft.Peer) (*zmq.Socket, e
 		}
 		socket.SetLinger(0)
 
-		logger.Printf("Connecting to: %s", peer.ConnectionString)
-		err = socket.Connect("tcp://" + peer.ConnectionString)
+		logger.Printf("Connecting to: %s", peer)
+		err = socket.Connect("tcp://" + peer)
 		if err != nil {
 			return nil, err
 		}
@@ -165,10 +212,10 @@ func (transporter *ZmqTransporter) getSocketFor(peer *raft.Peer) (*zmq.Socket, e
 			return nil, err
 		}
 
-		transporter.outgoing[peer.ConnectionString] = socket
+		transporter.outgoing[peer] = socket
 	}
 
-	return transporter.outgoing[peer.ConnectionString], nil
+	return transporter.outgoing[peer], nil
 }
 
 // sendRequest sends encodes, sends request and decodes response
@@ -181,7 +228,7 @@ func (transporter *ZmqTransporter) sendRequest(name string, kind byte, peer *raf
 		return false
 	}
 
-	socket, err := transporter.getSocketFor(peer)
+	socket, err := transporter.getSocketFor(peer.ConnectionString)
 	if err != nil {
 		logger.Printf("Unable to create socket for peer %s: %v", peer.ConnectionString, err)
 		return false
@@ -247,6 +294,53 @@ func (transporter *ZmqTransporter) SendSnapshotRecoveryRequest(server raft.Serve
 
 	if transporter.sendRequest("snapshot recovery", requestShapshotRecovery, peer, req, resp) {
 		return resp
+	}
+
+	return nil
+}
+
+// RegisterCommand stores information about command, so that it could be decoded on receiving
+func (transporter *ZmqTransporter) RegisterCommand(instanciator CommandInstanciator) {
+	command := instanciator()
+	name := command.CommandName()
+	if transporter.commands[name] != nil {
+		panic(fmt.Sprintf("Duplicate register for command name %s", name))
+	}
+	transporter.commands[name] = instanciator
+}
+
+// SendCommand sends command to other peer and receives reply
+func (transporter *ZmqTransporter) SendCommand(peer string, command raft.Command) error {
+	socket, err := transporter.getSocketFor(peer)
+	if err != nil {
+		return fmt.Errorf("unable to create socket for peer %s: %v", peer, err)
+	}
+
+	buf := new(bytes.Buffer)
+	buf.WriteByte(requestCommand)
+
+	encoder := json.NewEncoder(buf)
+	encoder.Encode(command.CommandName())
+	encoder.Encode(command)
+
+	_, err = socket.SendBytes(buf.Bytes(), 0)
+	if err != nil {
+		return fmt.Errorf("unable to send command %s to peer %s: %v", command.CommandName(), peer, err)
+	}
+
+	response, err := socket.RecvBytes(0)
+	if err != nil {
+		return fmt.Errorf("unable to receive %s response from peer %s: %v", command.CommandName(), peer, err)
+	}
+
+	var result interface{}
+	err = json.Unmarshal(response, &result)
+	if err != nil {
+		return fmt.Errorf("unable to decode %s response from peer %s: %v", command.CommandName(), peer, err)
+	}
+
+	if result != nil {
+		return fmt.Errorf("error response to command %s from peer %s: %v", command.CommandName(), peer, result)
 	}
 
 	return nil
