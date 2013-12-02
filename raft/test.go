@@ -1,15 +1,11 @@
 package raft
 
 import (
-	"io/ioutil"
-	"os"
+	"time"
 )
 
-func tempDirForDB() string {
-	p, _ := ioutil.TempDir("", "czar-test-")
-	if err := os.MkdirAll(p, 0755); err != nil {
-		panic(err.Error())
-	}
-
-	return p
-}
+const (
+	testListener1   = "127.0.0.1:7535"
+	testListener2   = "127.0.0.1:7536"
+	testRecvTimeout = 1 * time.Second
+)

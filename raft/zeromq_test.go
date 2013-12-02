@@ -3,21 +3,13 @@ package raft
 import (
 	"github.com/goraft/raft"
 	. "launchpad.net/gocheck"
-	"os"
 	"testing"
 	"time"
 )
 
-const (
-	testListener1   = "127.0.0.1:7535"
-	testListener2   = "127.0.0.1:7536"
-	testRecvTimeout = 1 * time.Second
-)
-
 // Create new raft test server
-func newTestServer(name string, transporter raft.Transporter) raft.Server {
-	p := tempDirForDB()
-	server, _ := raft.NewServer(name, p, transporter, &MockStateMachine{}, nil, "")
+func newTestServer(name string, transporter raft.Transporter, dbPath string) raft.Server {
+	server, _ := raft.NewServer(name, dbPath, transporter, &MockStateMachine{}, nil, "")
 	return server
 }
 
@@ -55,8 +47,8 @@ func (s *ZmqSuite) SetUpTest(c *C) {
 	s.transporter2, err = NewZmqTransporter(testListener2, testRecvTimeout)
 	c.Assert(err, IsNil)
 
-	s.server1 = newTestServer("server1", s.transporter1)
-	s.server2 = newTestServer("server2", s.transporter1)
+	s.server1 = newTestServer("server1", s.transporter1, c.MkDir())
+	s.server2 = newTestServer("server2", s.transporter1, c.MkDir())
 
 	s.peer1 = &raft.Peer{Name: "server1", ConnectionString: testListener1}
 	s.peer2 = &raft.Peer{Name: "server2", ConnectionString: testListener2}
@@ -71,13 +63,6 @@ func (s *ZmqSuite) TearDownTest(c *C) {
 	}
 
 	time.Sleep(100 * time.Millisecond)
-
-	if s.server1 != nil {
-		os.RemoveAll(s.server1.Path())
-	}
-	if s.server2 != nil {
-		os.RemoveAll(s.server1.Path())
-	}
 }
 
 func (s *ZmqSuite) TestStartTransport(c *C) {

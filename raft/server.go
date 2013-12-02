@@ -14,10 +14,12 @@ import (
 	"time"
 )
 
+// Server is instance of raft server with ØMQ backend
 type Server struct {
-	dbPath     string
-	raftServer raft.Server
-	transport  *ZmqTransporter
+	dbPath        string
+	raftServer    raft.Server
+	listenAddress string
+	transport     *ZmqTransporter
 }
 
 var logger = log.New(os.Stdout, "[raft-zeromq] ", log.Lmicroseconds)
@@ -78,9 +80,15 @@ func NewServer(dbPath string, listenAddress string, receiveTimeout time.Duration
 		return nil, fmt.Errorf("error creating Raft server: %v", err)
 	}
 
+	// Register standard raft commands in ØMQ layer
+	transporter.RegisterCommand(func() raft.Command { return &raft.DefaultJoinCommand{} })
+	transporter.RegisterCommand(func() raft.Command { return &raft.DefaultLeaveCommand{} })
+	transporter.RegisterCommand(func() raft.Command { return &raft.NOPCommand{} })
+
 	return &Server{dbPath: dbPath,
-		raftServer: server,
-		transport:  transporter,
+		raftServer:    server,
+		transport:     transporter,
+		listenAddress: listenAddress,
 	}, nil
 }
 
@@ -93,14 +101,33 @@ func (s *Server) Start(leader string) error {
 		return fmt.Errorf("unable to start Raft server: %v", err)
 	}
 
+	joinCommand := &raft.DefaultJoinCommand{
+		Name:             s.raftServer.Name(),
+		ConnectionString: s.listenAddress,
+	}
+
 	if leader != "" {
 		// Attempting to join
 		if !s.raftServer.IsLogEmpty() {
 			return fmt.Errorf("cannot join with non-empty log")
 		}
-		// TODO: send Join command to leader
+
+		err = s.transport.SendCommand(leader, joinCommand)
+		if err != nil {
+			return fmt.Errorf("unable to join leader %s: %v", leader, err)
+		}
+
+		logger.Printf("Joined %s as leader\n", leader)
+
 	} else if s.raftServer.IsLogEmpty() {
-		// TODO: send Join command to myself
+		// Join myself: empty cluster
+		logger.Printf("Starting with empty cluster\n")
+
+		_, err = s.raftServer.Do(joinCommand)
+
+		if err != nil {
+			return fmt.Errorf("unable to join itself: %v", err)
+		}
 	} else {
 		// Recovered from log
 		logger.Printf("Recovered from log\n")
