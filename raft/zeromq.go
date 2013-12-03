@@ -17,13 +17,14 @@ type CommandInstanciator func() raft.Command
 
 // ZmqTransporter mplements raft.Transporter interface
 type ZmqTransporter struct {
-	incoming       *zmq.Socket
-	outgoing       map[string]*zmq.Socket
-	stop           chan interface{}
-	running        bool
-	server         raft.Server
-	receiveTimeout time.Duration
-	commands       map[string]CommandInstanciator
+	incoming         *zmq.Socket
+	outgoing         map[string]*zmq.Socket
+	stop             chan interface{}
+	running          bool
+	server           raft.Server
+	receiveTimeout   time.Duration
+	commands         map[string]CommandInstanciator
+	ConnectionString string
 }
 
 // Bytes that are used to distinguish packets on the wire
@@ -45,10 +46,11 @@ type raftReqResp interface {
 // start processing incoming requests
 func NewZmqTransporter(listenAddress string, receiveTimeout time.Duration) (*ZmqTransporter, error) {
 	result := &ZmqTransporter{
-		outgoing:       make(map[string]*zmq.Socket),
-		stop:           make(chan interface{}),
-		receiveTimeout: receiveTimeout,
-		commands:       make(map[string]CommandInstanciator),
+		outgoing:         make(map[string]*zmq.Socket),
+		stop:             make(chan interface{}),
+		receiveTimeout:   receiveTimeout,
+		commands:         make(map[string]CommandInstanciator),
+		ConnectionString: listenAddress,
 	}
 
 	incoming, err := zmq.NewSocket(zmq.REP)
@@ -74,7 +76,7 @@ func (transporter *ZmqTransporter) Start(server raft.Server) {
 	transporter.running = true
 	go func() {
 		reactor := zmq.NewReactor()
-		reactor.AddSocket(transporter.incoming, zmq.POLLIN, func(zmq.State) error { glog.Info("Socket triggered"); transporter.parseIncomingPackets(); return nil })
+		reactor.AddSocket(transporter.incoming, zmq.POLLIN, func(zmq.State) error { transporter.parseIncomingPackets(); return nil })
 
 		var chId uint64
 		chId = reactor.AddChannel(transporter.stop, 1, func(interface{}) error {
@@ -85,7 +87,7 @@ func (transporter *ZmqTransporter) Start(server raft.Server) {
 		})
 
 		for transporter.running {
-			glog.Info("Entering reactor")
+			glog.V(2).Info("Entering reactor")
 			err := reactor.Run(100 * time.Millisecond)
 			if err != nil && err.Error() != "No sockets to poll, no channels to read" {
 				glog.Infof("Got error from ZMQ reactor: %v", err)
