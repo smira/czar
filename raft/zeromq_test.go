@@ -4,7 +4,6 @@ import (
 	"github.com/goraft/raft"
 	. "launchpad.net/gocheck"
 	"testing"
-	"time"
 )
 
 // Create new raft test server
@@ -61,8 +60,6 @@ func (s *ZmqSuite) TearDownTest(c *C) {
 	if s.transporter2 != nil {
 		s.transporter2.Shutdown()
 	}
-
-	time.Sleep(100 * time.Millisecond)
 }
 
 func (s *ZmqSuite) TestStartTransport(c *C) {
