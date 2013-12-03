@@ -136,6 +136,6 @@ func (s *Server) Start(leader string) error {
 
 // Stop shuts down raft server and transport
 func (s *Server) Stop() {
-	s.raftServer.Stop()
 	s.transport.Shutdown()
+	s.raftServer.Stop()
 }
