@@ -15,6 +15,11 @@ func (s *ServerSuite) SetUpTest(c *C) {
 	s.dbPath = c.MkDir()
 }
 
+func (s *ServerSuite) TearDownTest(c *C) {
+	// give some time ØMQ to clean up
+	time.Sleep(100 * time.Millisecond)
+}
+
 func (s *ServerSuite) TestGetNodeName(c *C) {
 	name, err := getNodeName(s.dbPath)
 	c.Assert(err, IsNil)
