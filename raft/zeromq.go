@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/golang/glog"
 	"github.com/goraft/raft"
 	zmq "github.com/pebbe/zmq3"
 	"io"
@@ -56,7 +57,7 @@ func NewZmqTransporter(listenAddress string, receiveTimeout time.Duration) (*Zmq
 	}
 	incoming.SetLinger(0)
 
-	logger.Printf("Starting to listen at %s\n", listenAddress)
+	glog.Infof("Starting to listen at %s\n", listenAddress)
 	err = incoming.Bind("tcp://" + listenAddress)
 	if err != nil {
 		return nil, err
@@ -74,11 +75,22 @@ func (transporter *ZmqTransporter) Start(server raft.Server) {
 	go func() {
 		reactor := zmq.NewReactor()
 		reactor.AddSocket(transporter.incoming, zmq.POLLIN, func(zmq.State) error { return transporter.parseIncomingResponse() })
-		reactor.AddChannel(transporter.stop, 1, func(interface{}) error { transporter.running = false; return nil })
+
+		var chId uint64
+		chId = reactor.AddChannel(transporter.stop, 1, func(interface{}) error {
+			transporter.running = false
+			reactor.RemoveChannel(chId)
+			reactor.RemoveSocket(transporter.incoming)
+			return nil
+		})
 
 		for transporter.running {
-			reactor.Run(100 * time.Millisecond)
+			err := reactor.Run(100 * time.Millisecond)
+			if err != nil && err.Error() != "No sockets to poll, no channels to read" {
+				glog.Infof("Got error from ZMQ reactor: %v", err)
+			}
 		}
+		transporter.stop <- true
 	}()
 }
 
@@ -86,25 +98,25 @@ func (transporter *ZmqTransporter) Start(server raft.Server) {
 func (transporter *ZmqTransporter) processResponse(name string, rb *bytes.Buffer, req raftReqResp, handler func() raftReqResp) error {
 	_, err := req.Decode(rb)
 	if err != nil && err != io.EOF {
-		logger.Printf("Unable to decode %s: %v", name, err)
+		glog.Infof("Unable to decode %s: %v", name, err)
 		return err
 	}
 	resp := handler()
 	if resp == nil || !reflect.ValueOf(resp).Elem().IsValid() {
-		logger.Printf("Got nil response from raft to %s", name)
+		glog.Infof("Got nil response from raft to %s", name)
 		return nil
 	}
 
 	var wb bytes.Buffer
 	_, err = resp.Encode(&wb)
 	if err != nil {
-		logger.Printf("Unable to encode response to %s: %v", name, err)
+		glog.Infof("Unable to encode response to %s: %v", name, err)
 		return err
 	}
 
 	_, err = transporter.incoming.SendBytes(wb.Bytes(), 0)
 	if err != nil {
-		logger.Printf("Unable to send response back to %s: %v", name, err)
+		glog.Infof("Unable to send response back to %s: %v", name, err)
 		return err
 	}
 
@@ -115,7 +127,7 @@ func (transporter *ZmqTransporter) processResponse(name string, rb *bytes.Buffer
 func (transporter *ZmqTransporter) parseIncomingResponse() error {
 	request, err := transporter.incoming.RecvBytes(0)
 	if err != nil {
-		logger.Printf("Error while receiving incoming request: %v\n", err)
+		glog.Infof("Error while receiving incoming request: %v\n", err)
 		return nil
 	}
 
@@ -123,7 +135,7 @@ func (transporter *ZmqTransporter) parseIncomingResponse() error {
 
 	kind, err := rb.ReadByte()
 	if err != nil {
-		logger.Printf("Unable to read first byte of request: %v", err)
+		glog.Infof("Unable to read first byte of request: %v", err)
 		return nil
 	}
 
@@ -182,10 +194,10 @@ func (transporter *ZmqTransporter) parseIncomingResponse() error {
 
 		_, err = transporter.incoming.SendBytes(wb.Bytes(), 0)
 		if err != nil {
-			logger.Printf("Unable to send response back to command %s: %v", commandName, err)
+			glog.Infof("Unable to send response back to command %s: %v", commandName, err)
 		}
 	default:
-		logger.Printf("Unknown request kind: %v", kind)
+		glog.Infof("Unknown request kind: %v", kind)
 	}
 
 	return nil
@@ -201,7 +213,7 @@ func (transporter *ZmqTransporter) getSocketFor(peer string) (*zmq.Socket, error
 		}
 		socket.SetLinger(0)
 
-		logger.Printf("Connecting to: %s", peer)
+		glog.V(1).Infof("Connecting to: %s", peer)
 		err = socket.Connect("tcp://" + peer)
 		if err != nil {
 			return nil, err
@@ -224,31 +236,31 @@ func (transporter *ZmqTransporter) sendRequest(name string, kind byte, peer *raf
 	b.WriteByte(kind)
 
 	if _, err := req.Encode(&b); err != nil {
-		logger.Printf("Encoding failed for %s request: %v", name, err)
+		glog.Infof("Encoding failed for %s request: %v", name, err)
 		return false
 	}
 
 	socket, err := transporter.getSocketFor(peer.ConnectionString)
 	if err != nil {
-		logger.Printf("Unable to create socket for peer %s: %v", peer.ConnectionString, err)
+		glog.Infof("Unable to create socket for peer %s: %v", peer.ConnectionString, err)
 		return false
 	}
 
 	_, err = socket.SendBytes(b.Bytes(), 0)
 	if err != nil {
-		logger.Printf("Unable to send message to peer %s: %v", peer.ConnectionString, err)
+		glog.Infof("Unable to send message to peer %s: %v", peer.ConnectionString, err)
 		return false
 	}
 
 	response, err := socket.RecvBytes(0)
 	if err != nil {
-		logger.Printf("Unable to receive %s response from peer %s: %v", name, peer.ConnectionString, err)
+		glog.Infof("Unable to receive %s response from peer %s: %v", name, peer.ConnectionString, err)
 		return false
 	}
 
 	rb := bytes.NewBuffer(response)
 	if _, err = resp.Decode(rb); err != nil && err != io.EOF {
-		logger.Printf("Unable to decode %s response from peer %s: %v", name, peer.ConnectionString, err)
+		glog.Infof("Unable to decode %s response from peer %s: %v", name, peer.ConnectionString, err)
 		return false
 	}
 
@@ -349,9 +361,10 @@ func (transporter *ZmqTransporter) SendCommand(peer string, command raft.Command
 // Shutdown stops transporter, processing of incoming packets, closes ØMQ sockets
 func (transporter *ZmqTransporter) Shutdown() {
 	if transporter.running {
-		logger.Printf("Shutting down ZMQ transporter for server %s\n", transporter.server.Name())
+		glog.V(2).Infof("Shutting down ZMQ transporter for server %s\n", transporter.server.Name())
 		transporter.stop <- true
-		logger.Printf("Stopped ZMQ transporter for server %s\n", transporter.server.Name())
+		<-transporter.stop
+		glog.Infof("Stopped ZMQ transporter for server %s\n", transporter.server.Name())
 	}
 	transporter.incoming.Close()
 	for _, socket := range transporter.outgoing {
