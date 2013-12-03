@@ -5,10 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"github.com/golang/glog"
 	"github.com/goraft/raft"
 	"io"
 	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -21,8 +21,6 @@ type Server struct {
 	listenAddress string
 	transport     *ZmqTransporter
 }
-
-var logger = log.New(os.Stdout, "[raft-zeromq] ", log.Lmicroseconds)
 
 // Length of node name in bytes
 const nodeNameLength = 16
@@ -38,7 +36,7 @@ func getNodeName(dbPath string) (string, error) {
 
 	if err == nil {
 		nodeName = string(buf)
-		logger.Printf("Starting with node name: %s\n", nodeName)
+		glog.Infof("Starting with node name: %s\n", nodeName)
 		return nodeName, nil
 	}
 
@@ -52,7 +50,7 @@ func getNodeName(dbPath string) (string, error) {
 		return "", fmt.Errorf("unable to generate random data: %v", err)
 	}
 	nodeName = hex.EncodeToString(rb)
-	logger.Printf("Generated node name: %s\n", nodeName)
+	glog.Infof("Generated node name: %s\n", nodeName)
 
 	err = ioutil.WriteFile(nodeNamePath, []byte(nodeName), 0664)
 	if err != nil {
@@ -96,6 +94,7 @@ func NewServer(dbPath string, listenAddress string, receiveTimeout time.Duration
 // leader or runs on its own
 func (s *Server) Start(leader string) error {
 	s.transport.Start(s.raftServer)
+
 	err := s.raftServer.Start()
 	if err != nil {
 		return fmt.Errorf("unable to start Raft server: %v", err)
@@ -117,11 +116,11 @@ func (s *Server) Start(leader string) error {
 			return fmt.Errorf("unable to join leader %s: %v", leader, err)
 		}
 
-		logger.Printf("Joined %s as leader\n", leader)
+		glog.Infof("Joined %s as leader\n", leader)
 
 	} else if s.raftServer.IsLogEmpty() {
 		// Join myself: empty cluster
-		logger.Printf("Starting with empty cluster\n")
+		glog.Infof("Starting with empty cluster\n")
 
 		_, err = s.raftServer.Do(joinCommand)
 
@@ -130,7 +129,7 @@ func (s *Server) Start(leader string) error {
 		}
 	} else {
 		// Recovered from log
-		logger.Printf("Recovered from log\n")
+		glog.Infof("Recovered from log\n")
 	}
 	return nil
 }
